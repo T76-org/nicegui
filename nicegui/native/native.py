@@ -20,11 +20,70 @@ try:
             self.method_queue = method_queue
             self.response_queue = response_queue
 
-        async def create_window(self, title: str, url: str) -> None:
+        async def create_window(
+            self,
+            title: str,
+            url: str | None = None,
+            html: str | None = None,
+            width: int = 800,
+            height: int = 600,
+            x: int | None = None,
+            y: int | None = None,
+            resizable: bool = True,
+            fullscreen: bool = False,
+            min_size: tuple[int, int] = (200, 100),
+            hidden: bool = False,
+            frameless: bool = False,
+            easy_drag: bool = True,
+            shadow: bool = True,
+            focus: bool = True,
+            minimized: bool = False,
+            maximized: bool = False,
+            on_top: bool = False,
+            confirm_close: bool = False,
+            background_color: str = '#FFFFFF',
+            transparent: bool = False,
+            text_select: bool = False,
+            zoomable: bool = False,
+            draggable: bool = False,
+            vibrancy: bool = False,
+        ) -> 'WindowProxy':
             if not url.startswith('http://') and not url.startswith('https://'):
                 url = await self.window_call('self', 'get', 'base_url') + url
 
-            return await self.window_call(None, 'call', 'create_window', (title, url))
+            return await self.window_call(
+                None, 
+                'call', 
+                'create_window', 
+                (), 
+                {
+                    'title': title, 
+                    'url': url, 
+                    'html': html, 
+                    'width': width, 
+                    'height': height, 
+                    'x': x, 
+                    'y': y, 
+                    'resizable': resizable, 
+                    'fullscreen': fullscreen, 
+                    'min_size': min_size, 
+                    'hidden': hidden, 
+                    'frameless': frameless, 
+                    'easy_drag': easy_drag, 
+                    'shadow': shadow, 
+                    'focus': focus, 
+                    'minimized': minimized, 
+                    'maximized': maximized, 
+                    'on_top': on_top, 
+                    'confirm_close': confirm_close, 
+                    'background_color': background_color, 
+                    'transparent': transparent, 
+                    'text_select': text_select, 
+                    'zoomable': zoomable, 
+                    'draggable': draggable, 
+                    'vibrancy': vibrancy,
+                }
+            )
 
         async def window_call(self, window_hash: int, action:str, prop_name: str, args: Tuple = (), kwargs: Dict[str, Any] = {}) -> Any:
             self.method_queue.put((

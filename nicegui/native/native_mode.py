@@ -56,7 +56,7 @@ class WebviewServer:
 
                     for win in webview.windows:
                         if win.__hash__() == target:
-                            target = win
+                            target_obj = win
                             break
 
             res = None
