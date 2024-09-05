@@ -139,8 +139,8 @@ async def _startup() -> None:
 
 async def _shutdown() -> None:
     """Handle the shutdown event."""
-    if app.native.main_window:
-        app.native.main_window.signal_server_shutdown()
+    if app.native.webview_proxy:
+        app.native.webview_proxy.stop()
     air.disconnect()
     app.stop()
     run.tear_down()

@@ -11,7 +11,7 @@ from uvicorn.supervisors import ChangeReload, Multiprocess
 import __main__
 
 from . import core, helpers
-from . import native as native_module
+from .native import WebviewServer, method_queue, response_queue
 from .air import Air
 from .client import Client
 from .language import Language
@@ -134,9 +134,9 @@ def run(*,
     if native:
         show = False
         host = host or '127.0.0.1'
-        port = port or native_module.find_open_port()
+        port = port or WebviewServer.find_open_port()
         width, height = window_size or (800, 600)
-        native_module.activate(host, port, title, width, height, fullscreen, frameless)
+        WebviewServer.activate(host, port, title, width, height, fullscreen, frameless)
     else:
         port = port or 8080
         host = host or '0.0.0.0'
@@ -170,8 +170,8 @@ def run(*,
         **kwargs,
     )
     config.storage_secret = storage_secret
-    config.method_queue = native_module.method_queue if native else None
-    config.response_queue = native_module.response_queue if native else None
+    config.method_queue = method_queue if native else None
+    config.response_queue = response_queue if native else None
     Server.create_singleton(config)
 
     if (reload or config.workers > 1) and not isinstance(config.app, str):

@@ -9,7 +9,8 @@ import tempfile
 import time
 import warnings
 from threading import Event, Thread
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Dict, Tuple
+from uuid import uuid4
 
 from .. import core, helpers, optional_features
 from ..logging import log
@@ -26,109 +27,173 @@ except ModuleNotFoundError:
     pass
 
 
-def _open_window(
-    host: str, port: int, title: str, width: int, height: int, fullscreen: bool, frameless: bool,
-    method_queue: mp.Queue, response_queue: mp.Queue,
-) -> None:
-    while not helpers.is_port_open(host, port):
-        time.sleep(0.1)
+class WebviewServer:
+    def __init__(self, host: str, port: int, method_queue: mp.Queue, response_queue: mp.Queue) -> None:
+        self.host = host
+        self.port = port
+        self.method_queue = method_queue
+        self.response_queue = response_queue
 
-    window_kwargs = {
-        'url': f'http://{host}:{port}',
-        'title': title,
-        'width': width,
-        'height': height,
-        'fullscreen': fullscreen,
-        'frameless': frameless,
-        **core.app.native.window_args,
-    }
-    webview.settings.update(**core.app.native.settings)
-    window = webview.create_window(**window_kwargs)
-    closed = Event()
-    window.events.closed += closed.set
-    _start_window_method_executor(window, method_queue, response_queue, closed)
-    webview.start(storage_path=tempfile.mkdtemp(), **core.app.native.start_args)
+        self._pending_executions: Dict[str, Thread] = {}
+        self.main_window: webview.Window = None
+        self._main_window_open = Event();
+        self._main_window_open.set()
 
-
-def _start_window_method_executor(window: webview.Window,
-                                  method_queue: mp.Queue,
-                                  response_queue: mp.Queue,
-                                  closed: Event) -> None:
-    def execute(method: Callable, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
+    def _execute(self, thread_name: str, action: str, target: Any, prop_name: str, args: Tuple[Any], kwargs: Dict[str, Any]) -> None:
         try:
-            response = method(*args, **kwargs)
-            if response is not None or 'dialog' in method.__name__:
-                response_queue.put(response)
+            target_obj = None
+
+            match target:
+                case None:
+                    target_obj = webview
+
+                case 'self':
+                    target_obj = self
+
+                case _:
+                    if target == -1:
+                        target_obj = self.main_window
+
+                    for win in webview.windows:
+                        if win.__hash__() == target:
+                            target_obj = win
+                            break
+
+            res = None
+
+            if not hasattr(target_obj, prop_name):
+                raise ValueError(f'property {prop_name} not found')
+            
+            match action:
+                case 'set':
+                    if callable(getattr(target_obj, prop_name)):
+                        raise ValueError(f'property {prop_name} is not settable')
+                    
+                    setattr(target_obj, prop_name, args)
+
+                case 'get':
+                    if callable(getattr(target_obj, prop_name)):
+                        raise ValueError(f'property {prop_name} is not settable')
+
+                    res = getattr(target_obj, prop_name)
+
+                case 'call':
+                    if not callable(getattr(target_obj, prop_name)):
+                        raise ValueError(f'property {prop_name} is not callable')
+                    
+                    res = getattr(target_obj, prop_name)(*args, **kwargs)
+
+                    pass
+
+            if isinstance(res, webview.Window):
+                res = ('window', res.__hash__())
+            elif isinstance(res, list):
+                res = ('list', [('window', r.__hash__()) if isinstance(r, webview.Window) else (type(r).__name__, r) for r in res])
+            else:
+                res = (type(res).__name__, res)
+
+            self.response_queue.put(res)
         except Exception:
-            log.exception(f'error in window.{method.__name__}')
+            log.exception(f'error in WebviewServer.{prop_name}')
+        finally:
+            if thread_name in self._pending_executions:
+                self._pending_executions.pop(thread_name)
 
-    def window_method_executor() -> None:
-        pending_executions: List[Thread] = []
-        while not closed.is_set():
+    def _executor(self) -> None:
+        while self._main_window_open.is_set():
             try:
-                method_name, args, kwargs = method_queue.get(block=False)
-                if method_name == 'signal_server_shutdown':
-                    if pending_executions:
-                        log.warning('shutdown is possibly blocked by opened dialogs like a file picker')
-                        while pending_executions:
-                            pending_executions.pop().join()
-                elif method_name == 'get_always_on_top':
-                    response_queue.put(window.on_top)
-                elif method_name == 'set_always_on_top':
-                    window.on_top = args[0]
-                elif method_name == 'get_position':
-                    response_queue.put((int(window.x), int(window.y)))
-                elif method_name == 'get_size':
-                    response_queue.put((int(window.width), int(window.height)))
-                else:
-                    method = getattr(window, method_name)
-                    if callable(method):
-                        pending_executions.append(Thread(target=execute, args=(method, args, kwargs)))
-                        pending_executions[-1].start()
-                    else:
-                        log.error(f'window.{method_name} is not callable')
+                action, target, prop_name, args, kwargs = self.method_queue.get(block=False)
+                thread_name = prop_name + '-' + uuid4().hex
+
+                if target == 'self' and prop_name == 'stop':
+                    self.stop()
+                    break
+
+                self._pending_executions[thread_name] = Thread(target=self._execute, args=(thread_name, action, target, prop_name, args, kwargs))
+                self._pending_executions[thread_name].start()
             except queue.Empty:
-                time.sleep(0.016)  # NOTE: avoid issue https://github.com/zauberzeug/nicegui/issues/2482 on Windows
+                time.sleep(0.016)
             except Exception:
-                log.exception(f'error in window.{method_name}')
+                log.exception(f'error in WebviewServer.{prop_name}')
 
-    Thread(target=window_method_executor).start()
-
-
-def activate(host: str, port: int, title: str, width: int, height: int, fullscreen: bool, frameless: bool) -> None:
-    """Activate native mode."""
-    def check_shutdown() -> None:
-        while process.is_alive():
+    def start(self, title: str, width: int, height: int, fullscreen: bool, frameless: bool) -> None:
+        while not helpers.is_port_open(self.host, self.port):
             time.sleep(0.1)
-        Server.instance.should_exit = True
-        while not core.app.is_stopped:
-            time.sleep(0.1)
-        _thread.interrupt_main()
 
-    if not optional_features.has('webview'):
-        log.error('Native mode is not supported in this configuration.\n'
-                  'Please run "pip install pywebview" to use it.')
-        sys.exit(1)
+        window_kwargs = {
+            'url': f'http://{self.host}:{self.port}',
+            'title': title,
+            'width': width,
+            'height': height,
+            'fullscreen': fullscreen,
+            'frameless': frameless,
+            **core.app.native.window_args,
+        }
 
-    mp.freeze_support()
-    args = host, port, title, width, height, fullscreen, frameless, native.method_queue, native.response_queue
-    process = mp.Process(target=_open_window, args=args, daemon=True)
-    process.start()
+        webview.settings.update(**core.app.native.settings)
 
-    Thread(target=check_shutdown, daemon=True).start()
+        self.main_window = webview.create_window(**window_kwargs)
+        self.main_window.events.closed += self._main_window_open.clear
 
+        Thread(target=self._executor).start()
 
-def find_open_port(start_port: int = 8000, end_port: int = 8999) -> int:
-    """Reliably find an open port in a given range.
+        webview.start(storage_path=tempfile.mkdtemp(), **core.app.native.start_args)
 
-    This function will actually try to open the port to ensure no firewall blocks it.
-    This is better than, e.g., passing port=0 to uvicorn.
-    """
-    for port in range(start_port, end_port + 1):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('localhost', port))
-                return port
-        except OSError:
-            pass
-    raise OSError('No open port found')
+    def stop(self) -> None:
+        if len(self._pending_executions) > 0:
+            log.warning('shutdown is possibly blocked by opened dialogs like a file picker')
+            for key in self._pending_executions:
+                self._pending_executions[key].join()
+                self._pending_executions.pop(key)
+
+    @property
+    def base_url(self) -> str:
+        return f'http://{self.host}:{self.port}'
+
+    @classmethod
+    def start_webview(
+        cls,
+        host: str, port: int, title: str, width: int, height: int, fullscreen: bool, frameless: bool,
+        method_queue: mp.Queue, response_queue: mp.Queue,
+    ) -> None:
+        server = WebviewServer(host, port, method_queue, response_queue)
+        server.start(title, width, height, fullscreen, frameless)
+
+    @classmethod
+    def activate(cls, host: str, port: int, title: str, width: int, height: int, fullscreen: bool, frameless: bool) -> None:
+        """Activate native mode."""
+        def check_shutdown() -> None:
+            while process.is_alive():
+                time.sleep(0.1)
+            Server.instance.should_exit = True
+            while not core.app.is_stopped:
+                time.sleep(0.1)
+            _thread.interrupt_main()
+
+        if not optional_features.has('webview'):
+            log.error('Native mode is not supported in this configuration.\n'
+                    'Please run "pip install pywebview" to use it.')
+            sys.exit(1)
+
+        mp.freeze_support()
+        args = host, port, title, width, height, fullscreen, frameless, native.method_queue, native.response_queue
+        process = mp.Process(target=WebviewServer.start_webview, args=args, daemon=True)
+        process.start()
+    
+        Thread(target=check_shutdown, daemon=True).start()
+
+    @classmethod
+    def find_open_port(cls, start_port: int = 8000, end_port: int = 8999) -> int:
+        """Reliably find an open port in a given range.
+
+        This function will actually try to open the port to ensure no firewall blocks it.
+        This is better than, e.g., passing port=0 to uvicorn.
+        """
+        for port in range(start_port, end_port + 1):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    return port
+            except OSError:
+                pass
+        raise OSError('No open port found')
