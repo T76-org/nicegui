@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from ..dataclasses import KWONLY_SLOTS
-from .native import WindowProxy
+from .native import WindowProxy, WebviewProxy
 
 
 @dataclass(**KWONLY_SLOTS)
@@ -11,3 +11,5 @@ class NativeConfig:
     window_args: Dict[str, Any] = field(default_factory=dict)
     settings: Dict[str, Any] = field(default_factory=dict)
     main_window: Optional[WindowProxy] = None
+    webview_proxy: Optional[WebviewProxy] = None
+    

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import multiprocessing
 import socket
 from typing import List, Optional
@@ -8,6 +9,7 @@ import uvicorn
 
 from . import core, storage
 from .native import native
+from .run import io_bound
 
 
 class CustomServerConfig(uvicorn.Config):
@@ -28,7 +30,8 @@ class Server(uvicorn.Server):
         self.instance = self
         assert isinstance(self.config, CustomServerConfig)
         if self.config.method_queue is not None and self.config.response_queue is not None:
-            core.app.native.main_window = native.WindowProxy()
+            core.app.native.webview_proxy = native.WebviewProxy(method_queue=self.config.method_queue, response_queue=self.config.response_queue)
+            core.app.native.main_window = native.WindowProxy(window_hash=-1, webview_proxy=core.app.native.webview_proxy)
             native.method_queue = self.config.method_queue
             native.response_queue = self.config.response_queue
 

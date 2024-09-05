@@ -1,7 +1,8 @@
+import asyncio
 import inspect
 import warnings
 from multiprocessing import Queue
-from typing import Any, Callable, Tuple
+from typing import Any, Callable, List, Tuple
 
 from .. import run
 from ..logging import log
@@ -14,121 +15,94 @@ try:
         # webview depends on bottle which uses the deprecated CGI function (https://github.com/bottlepy/bottle/issues/1403)
         warnings.filterwarnings('ignore', category=DeprecationWarning)
         import webview
-        from webview.window import FixPoint
 
-    class WindowProxy(webview.Window):
+    class WebviewProxy:
+        def __init__(self, method_queue: Queue, response_queue: Queue) -> None:
+            self.method_queue = method_queue
+            self.response_queue = response_queue
 
-        def __init__(self) -> None:  # pylint: disable=super-init-not-called
-            pass  # NOTE we don't call super().__init__ here because this is just a proxy to the actual window
+        async def create_window(self, title: str, url: str) -> None:
+            self.method_queue.put((
+                'call',
+                None,
+                'create_window', 
+                (), 
+                {'title':title, 'url':url}
+            ))
 
-        async def get_always_on_top(self) -> bool:
-            """Get whether the window is always on top."""
-            return await self._request()
+            res = await run.io_bound(lambda: self.response_queue.get())
 
-        def set_always_on_top(self, on_top: bool) -> None:
-            """Set whether the window is always on top."""
-            self._send(on_top)
+            return WindowProxy(res[1], self)
 
-        async def get_size(self) -> Tuple[int, int]:
-            """Get the window size as tuple (width, height)."""
-            return await self._request()
+        async def window_call(self, window_hash: int, action:str, prop_name: str, args: Any, kwargs: Any) -> Any:
+            self.method_queue.put((
+                action,
+                window_hash,
+                prop_name, 
+                args, 
+                kwargs
+            ))
 
-        async def get_position(self) -> Tuple[int, int]:
-            """Get the window position as tuple (x, y)."""
-            return await self._request()
+            res = await run.io_bound(lambda: self.response_queue.get())
 
-        def load_url(self, url: str) -> None:
-            self._send(url)
+            if res[0] == 'window':
+                return WindowProxy(res[1], self)
+            else:
+                return res[1]
 
-        def load_html(self, content: str, base_uri: str = ...) -> None:  # type: ignore
-            self._send(content, base_uri)
+        @property
+        async def windows(self) -> List[Any]:
+            self.method_queue.put((
+                'get',
+                None,
+                'windows', 
+                (), 
+                {}
+            ))
 
-        def load_css(self, stylesheet: str) -> None:
-            self._send(stylesheet)
+            res = await run.io_bound(lambda: self.response_queue.get())
 
-        def set_title(self, title: str) -> None:
-            self._send(title)
+            return [WindowProxy(win[0], self) for win in res]
+        
+        def stop(self) -> None:
+            self.method_queue.put((
+                'call',
+                'self',
+                'stop', 
+                (), 
+                {}
+            ))
 
-        async def get_cookies(self) -> Any:  # pylint: disable=invalid-overridden-method
-            return await self._request()
+    class WindowProxy:
+        Attributes: List[str] = ['title', 'on_top', 'x', 'y', 'width', 'height']
+        Unsupported: List[str] = ['dom']
 
-        async def get_current_url(self) -> str:  # pylint: disable=invalid-overridden-method
-            return await self._request()
+        def __init__(self, window_hash: int, webview_proxy: WebviewProxy) -> None:
+            self._window_hash = window_hash
+            self._webview_proxy = webview_proxy
 
-        def destroy(self) -> None:
-            self._send()
+        def __getattr__(self, name: str) -> Any:
+            async def _remote_call(*args: Any, **kwargs: Any) -> Any:
+                return await self._webview_proxy.window_call(self._window_hash, 'call', name, args, kwargs)
+            
+            if name.startswith('_'):
+                return super.__getattr__(name)
 
-        def show(self) -> None:
-            self._send()
+            if name in self.Attributes:
+                return self._webview_proxy.window_call(self._window_hash, 'get', name, (), {})
+            elif name in self.Unsupported:
+                raise AttributeError(f'Attribute {name} is not supported')
+            else:
+                return _remote_call
+        
+        def __setattr__(self, name: str, value: Any) -> None:
+            if name in self.__dict__ or name.startswith('_'):
+                return super().__setattr__(name, value)
 
-        def hide(self) -> None:
-            self._send()
-
-        def set_window_size(self, width: int, height: int) -> None:
-            self._send(width, height)
-
-        def resize(self, width: int, height: int, fix_point: FixPoint = FixPoint.NORTH | FixPoint.WEST) -> None:
-            self._send(width, height, fix_point)
-
-        def maximize(self) -> None:
-            self._send()
-
-        def minimize(self) -> None:
-            self._send()
-
-        def restore(self) -> None:
-            self._send()
-
-        def toggle_fullscreen(self) -> None:
-            self._send()
-
-        def move(self, x: int, y: int) -> None:
-            self._send(x, y)
-
-        async def evaluate_js(self, script: str) -> str:  # pylint: disable=arguments-differ,invalid-overridden-method
-            return await self._request(script)
-
-        async def create_confirmation_dialog(self, title: str, message: str) -> bool:  # pylint: disable=invalid-overridden-method
-            return await self._request(title, message)
-
-        async def create_file_dialog(  # pylint: disable=invalid-overridden-method
-            self,
-            dialog_type: int = webview.OPEN_DIALOG,
-            directory: str = '',
-            allow_multiple: bool = False,
-            save_filename: str = '',
-            file_types: Tuple[str, ...] = (),
-        ) -> Tuple[str, ...]:
-            return await self._request(
-                dialog_type=dialog_type,
-                directory=directory,
-                allow_multiple=allow_multiple,
-                save_filename=save_filename,
-                file_types=file_types,
-            )
-
-        def expose(self, function: Callable) -> None:  # pylint: disable=arguments-differ
-            raise NotImplementedError(f'exposing "{function}" is not supported')
-
-        def _send(self, *args: Any, **kwargs: Any) -> None:
-            name = inspect.currentframe().f_back.f_code.co_name  # type: ignore
-            method_queue.put((name, args, kwargs))
-
-        async def _request(self, *args: Any, **kwargs: Any) -> Any:
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    method_queue.put((name, args, kwargs))
-                    return response_queue.get()  # wait for the method to be called and writing its result to the queue
-                except Exception:
-                    log.exception(f'error in {name}')
-                    return None
-            name = inspect.currentframe().f_back.f_code.co_name  # type: ignore
-            return await run.io_bound(wrapper, *args, **kwargs)
-
-        def signal_server_shutdown(self) -> None:
-            """Signal the server shutdown."""
-            self._send()
+            asyncio.get_running_loop().create_task(self._webview_proxy.window_call(self._window_hash, 'set', name, (value), {}))
 
 except ModuleNotFoundError:
+    class WebviewProxy: #type: ignore
+        pass # just a dummy if webview is not installed
     class WindowProxy:  # type: ignore
         pass  # just a dummy if webview is not installed
