@@ -128,7 +128,6 @@ class WebviewServer:
 
         webview.settings.update(**core.app.native.settings)
 
-        main_window_closed = Event()
         self.main_window = webview.create_window(**window_kwargs)
         self.main_window.events.closed += self._main_window_open.clear
 
@@ -140,7 +139,7 @@ class WebviewServer:
         if len(self._pending_executions) > 0:
             log.warning('shutdown is possibly blocked by opened dialogs like a file picker')
             while len(self._pending_executions) > 0:
-                self._pending_executions.pop().join()
+                self._pending_executions.pop(0).join()
 
     @classmethod
     def start_webview(

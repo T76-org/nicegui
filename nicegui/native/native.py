@@ -73,7 +73,7 @@ try:
                 {}
             ))
 
-    class WindowProxy:
+    class WindowProxy(webview.Window):
         Attributes: List[str] = ['title', 'on_top', 'x', 'y', 'width', 'height']
         Unsupported: List[str] = ['dom']
 
@@ -81,22 +81,22 @@ try:
             self._window_hash = window_hash
             self._webview_proxy = webview_proxy
 
-        def __getattr__(self, name: str) -> Any:
+        def __getattribute__(self, name: str) -> Any:
             async def _remote_call(*args: Any, **kwargs: Any) -> Any:
                 return await self._webview_proxy.window_call(self._window_hash, 'call', name, args, kwargs)
             
             if name.startswith('_'):
-                return super.__getattr__(name)
+                return super().__getattribute__(name)
 
-            if name in self.Attributes:
+            if name in WindowProxy.Attributes:
                 return self._webview_proxy.window_call(self._window_hash, 'get', name, (), {})
-            elif name in self.Unsupported:
+            elif name in WindowProxy.Unsupported:
                 raise AttributeError(f'Attribute {name} is not supported')
             else:
                 return _remote_call
         
         def __setattr__(self, name: str, value: Any) -> None:
-            if name in self.__dict__ or name.startswith('_'):
+            if name.startswith('_'):
                 return super().__setattr__(name, value)
 
             asyncio.get_running_loop().create_task(self._webview_proxy.window_call(self._window_hash, 'set', name, (value), {}))
