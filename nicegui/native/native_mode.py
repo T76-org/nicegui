@@ -9,10 +9,10 @@ import tempfile
 import time
 import warnings
 from threading import Event, Thread
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 from uuid import uuid4
 
-from .. import core, helpers, optional_features, run
+from .. import core, helpers, optional_features
 from ..logging import log
 from ..server import Server
 from . import native
@@ -145,6 +145,10 @@ class WebviewServer:
             for key in self._pending_executions:
                 self._pending_executions[key].join()
                 self._pending_executions.pop(key)
+
+    @property
+    def base_url(self) -> str:
+        return f'http://{self.host}:{self.port}'
 
     @classmethod
     def start_webview(

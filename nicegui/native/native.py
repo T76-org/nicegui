@@ -1,8 +1,7 @@
 import asyncio
-import inspect
 import warnings
 from multiprocessing import Queue
-from typing import Any, Callable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .. import run
 from ..logging import log
@@ -22,9 +21,12 @@ try:
             self.response_queue = response_queue
 
         async def create_window(self, title: str, url: str) -> None:
-            return await self.window_call(None, 'call', 'create_window', (title, url), {})
+            if not url.startswith('http://') and not url.startswith('https://'):
+                url = await self.window_call('self', 'get', 'base_url') + url
 
-        async def window_call(self, window_hash: int, action:str, prop_name: str, args: Any, kwargs: Any) -> Any:
+            return await self.window_call(None, 'call', 'create_window', (title, url))
+
+        async def window_call(self, window_hash: int, action:str, prop_name: str, args: Tuple = (), kwargs: Dict[str, Any] = {}) -> Any:
             self.method_queue.put((
                 action,
                 window_hash,
@@ -44,7 +46,7 @@ try:
 
         @property
         async def windows(self) -> List[Any]:
-            return await self.window_call(None, 'get', 'windows', (), {})
+            return await self.window_call(None, 'get', 'windows')
         
         def stop(self) -> None:
             self.method_queue.put((
@@ -77,7 +79,6 @@ try:
             else:
                 return _remote_call
             
-        
         def __setattr__(self, name: str, value: Any) -> None:
             if name.startswith('_'):
                 return super().__setattr__(name, value)
