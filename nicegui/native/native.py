@@ -16,23 +16,13 @@ try:
         warnings.filterwarnings('ignore', category=DeprecationWarning)
         import webview
 
-    class WebviewProxy:
+    class WebviewProxy():
         def __init__(self, method_queue: Queue, response_queue: Queue) -> None:
             self.method_queue = method_queue
             self.response_queue = response_queue
 
         async def create_window(self, title: str, url: str) -> None:
-            self.method_queue.put((
-                'call',
-                None,
-                'create_window', 
-                (), 
-                {'title':title, 'url':url}
-            ))
-
-            res = await run.io_bound(lambda: self.response_queue.get())
-
-            return WindowProxy(res[1], self)
+            return await self.window_call(None, 'call', 'create_window', (title, url), {})
 
         async def window_call(self, window_hash: int, action:str, prop_name: str, args: Any, kwargs: Any) -> Any:
             self.method_queue.put((
@@ -47,22 +37,14 @@ try:
 
             if res[0] == 'window':
                 return WindowProxy(res[1], self)
+            elif res[0] == 'list':
+                return [WindowProxy(obj[1], self) if obj[0] == 'window' else obj[1] for obj in res[1]]
             else:
                 return res[1]
 
         @property
         async def windows(self) -> List[Any]:
-            self.method_queue.put((
-                'get',
-                None,
-                'windows', 
-                (), 
-                {}
-            ))
-
-            res = await run.io_bound(lambda: self.response_queue.get())
-
-            return [WindowProxy(win[0], self) for win in res]
+            return await self.window_call(None, 'get', 'windows', (), {})
         
         def stop(self) -> None:
             self.method_queue.put((
@@ -94,11 +76,12 @@ try:
                 raise AttributeError(f'Attribute {name} is not supported')
             else:
                 return _remote_call
+            
         
         def __setattr__(self, name: str, value: Any) -> None:
             if name.startswith('_'):
                 return super().__setattr__(name, value)
-
+            
             asyncio.get_running_loop().create_task(self._webview_proxy.window_call(self._window_hash, 'set', name, (value), {}))
 
 except ModuleNotFoundError:
