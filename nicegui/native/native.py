@@ -4,7 +4,6 @@ from multiprocessing import Queue
 from typing import Any, Dict, List, Tuple
 
 from .. import run
-from ..logging import log
 
 method_queue: Queue = Queue()
 response_queue: Queue = Queue()
@@ -19,6 +18,12 @@ try:
         def __init__(self, method_queue: Queue, response_queue: Queue) -> None:
             self.method_queue = method_queue
             self.response_queue = response_queue
+
+        async def ensure_local_url(self, url):
+            if not url.startswith('http://') and not url.startswith('https://'):
+                url = await self.window_call('self', 'get', 'base_url') + url
+
+            return url
 
         async def create_window(
             self,
@@ -48,9 +53,6 @@ try:
             draggable: bool = False,
             vibrancy: bool = False,
         ) -> 'WindowProxy':
-            if not url.startswith('http://') and not url.startswith('https://'):
-                url = await self.window_call('self', 'get', 'base_url') + url
-
             return await self.window_call(
                 None, 
                 'call', 
@@ -58,7 +60,7 @@ try:
                 (), 
                 {
                     'title': title, 
-                    'url': url, 
+                    'url': await self.ensure_local_url(url), 
                     'html': html, 
                     'width': width, 
                     'height': height, 
@@ -116,19 +118,27 @@ try:
                 {}
             ))
 
+        def window_proxy_for_window_hash(self, window_hash: int) -> 'WindowProxy':
+            return WindowProxy(window_hash, self)
+
     class WindowProxy(webview.Window):
         Attributes: List[str] = ['title', 'on_top', 'x', 'y', 'width', 'height']
+        Override: List[str] = ['load_url']
         Unsupported: List[str] = ['dom']
 
         def __init__(self, window_hash: int, webview_proxy: WebviewProxy) -> None:
             self._window_hash = window_hash
             self._webview_proxy = webview_proxy
 
+        async def load_url(self, url: str) -> None:
+            url = await self._webview_proxy.ensure_local_url(url)
+            await self._webview_proxy.window_call(self._window_hash, 'call', 'load_url', (url,), {})
+
         def __getattribute__(self, name: str) -> Any:
             async def _remote_call(*args: Any, **kwargs: Any) -> Any:
                 return await self._webview_proxy.window_call(self._window_hash, 'call', name, args, kwargs)
             
-            if name.startswith('_'):
+            if name.startswith('_') or name in WindowProxy.Override:
                 return super().__getattribute__(name)
 
             if name in WindowProxy.Attributes:
